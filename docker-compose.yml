@@ -1,0 +1,101 @@
+version: "3.8"
+
+services:
+  # Database Service (Postgres)
+  db:
+    image: postgres:15-alpine
+    container_name: krishi_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: krishi_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d krishi_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Broker Service (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: krishi_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Web Application Engine
+  web:
+    build: .
+    container_name: krishi_web
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=Krishi-Vani Core AI Backend
+      - POSTGRES_SERVER=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=krishi_db
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      - BHASHINI_API_KEY=${BHASHINI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - static_data:/workspace/static
+      - faiss_data:/workspace/data
+
+  # Celery Asynchronous Worker Node
+  worker:
+    build: .
+    container_name: krishi_worker
+    command: celery -A app.workers.celery_worker.celery_app worker --loglevel=info -c 2
+    restart: always
+    environment:
+      - PROJECT_NAME=Krishi-Vani Worker Node
+      - POSTGRES_SERVER=db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=krishi_db
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      - BHASHINI_API_KEY=${BHASHINI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - static_data:/workspace/static
+      - faiss_data:/workspace/data
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_data:
+    driver: local
+  faiss_data:
+    driver: local
