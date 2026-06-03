@@ -211,7 +211,7 @@ TWILIO_PHONE_NUMBER=your_twilio_number
 ```
 
 ### Step 3: Configure Telecom Webhooks
-In the Twilio Console (or Exotel dashboard), configure the **Incoming Call webhook** of your virtual phone number to:
+In the Twilio Console (or Exotel dashboard), configure the **Incoming Call webhook** of your virtual pho    ne number to:
 ```text
 https://xxxx-xxxx.ngrok-free.app/api/v1/webhook/missed-call
 ```
