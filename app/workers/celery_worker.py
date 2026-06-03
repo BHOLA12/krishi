@@ -33,9 +33,45 @@ celery_app.conf.update(
     enable_utc=True,
 )
 
-# Helper function to run async methods within sync Celery tasks
+# =============================================================================
+# ❌ PURANA CODE (KAAM NAHI KARTA — ISLIYE BADLA)
+# =============================================================================
+# def run_async(coro):
+#     return asyncio.get_event_loop().run_until_loop_complete(coro) \
+#         if asyncio.get_event_loop().is_running() \
+#         else asyncio.run(coro)
+#
+# ⚠️  KYU BADLA (WHY WE CHANGED):
+#     "run_until_loop_complete" — yeh method exist hi nahi karti asyncio mein.
+#     Sahi naam hai "run_until_complete". Yeh ek typo/spelling mistake thi.
+#
+#     Iska result:
+#       - Jab bhi Celery koi background task run karta (e.g. farmer ka callback),
+#         Python ek AttributeError throw karta tha aur poora task crash ho jaata tha.
+#       - Farmer ko kabhi callback nahi aata tha.
+#       - Koi error screen pe nahi dikhta — sirf logs mein silently fail hota tha.
+#
+#     Naya code teeno scenarios handle karta hai:
+#       1. Koi event loop nahi → asyncio.run() use karo (sabse common case)
+#       2. Loop already chal raha hai (gevent/eventlet) → threadsafe future use karo
+#       3. 60 second timeout — task zyada der tak hang nahi karega
+# =============================================================================
+
+# ✅ NAYA CODE — Teeno event loop scenarios handle karta hai
 def run_async(coro):
-    return asyncio.get_event_loop().run_until_loop_complete(coro) if asyncio.get_event_loop().is_running() else asyncio.run(coro)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already inside a running event loop (e.g. eventlet/gevent Celery worker)
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result(timeout=60)
+    else:
+        # No running loop — safe to call asyncio.run()
+        return asyncio.run(coro)
+
 
 @celery_app.task(name="tasks.process_voice_call_async")
 def process_voice_call_async(query_id_str: str):

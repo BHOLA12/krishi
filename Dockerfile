@@ -1,5 +1,5 @@
-# Use official Python 3.11 slim base image for runtime optimization
-FROM python:3.11-slim
+# Use official Python 3.12 slim base image for runtime optimization
+FROM python:3.12-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered output logging
 ENV PYTHONDONTWRITEBYTECODE=1

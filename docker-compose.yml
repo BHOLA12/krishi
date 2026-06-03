@@ -22,7 +22,7 @@ services:
 
   # Broker Service (Redis)
   redis:
-    image: redis:7-alpine
+    image: redis  :7-alpine
     container_name: krishi_redis
     restart: always
     ports:

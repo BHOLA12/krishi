@@ -1,0 +1,62 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment files with secrets — NEVER bake into Docker image
+.env
+.env.local
+.env.*.local
+
+# SQLite development database — do not include in production image
+krishi.db
+*.db
+*.sqlite3
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# IDE and editor config
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test and scratch files
+scratch/
+tests/
+*.test.py
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# PDF documents (research papers, walkthroughs)
+*.pdf
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Node modules (if any frontend tooling is added)
+node_modules/
+
+# HuggingFace model cache (downloaded at runtime or pre-baked separately)
+# data/whisper_models/ — keep this if you pre-download in Dockerfile
+# data/faiss_index/    — keep this to include seeded FAISS index in image

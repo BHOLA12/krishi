@@ -7,8 +7,16 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Krishi-Vani Core AI Backend"
     API_V1_STR: str = "/api/v1"
     ENV: str = "development"
-    DEBUG: bool = True
-    SECRET_KEY: str = "supersecretkeythatyoushouldchangeinproduction12345!"
+    DEBUG: bool = False  # Explicitly off by default; set DEBUG=true in .env for local dev
+    SECRET_KEY: str = ""  # REQUIRED — set a strong random value in .env
+
+    # Internal admin API key — protects endpoints like /sms/send from public access.
+    # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    INTERNAL_API_KEY: str = ""  # REQUIRED in production; leave empty to disable the endpoint
+
+    # If True, validate X-Twilio-Signature on all webhook endpoints.
+    # Set to False ONLY during local development without ngrok.
+    TWILIO_WEBHOOK_VALIDATION: bool = True
 
     # Database Settings
     POSTGRES_SERVER: str = "localhost"

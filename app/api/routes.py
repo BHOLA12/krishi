@@ -1,7 +1,9 @@
 import os
 import uuid
+import secrets
 import aiohttp
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
@@ -26,14 +28,73 @@ from app.services.tts import TTSService
 from app.telephony.provider_factory import TelephonyService
 from app.utils.helpers import save_upload_file, convert_audio_format
 from app.core.config import settings
+from app.core.twilio_validator import validate_twilio_webhook
 import structlog
 
 logger = structlog.get_logger()
 router = APIRouter()
 
+
+# =============================================================================
+# ❌ PURANA CODE — KOI BHI SMS BHEJ SAKTA THA (ISLIYE BADLA)
+# =============================================================================
+# @router.post("/sms/send")
+# async def send_sms_direct(request: SMSRequest):
+#     """Utility endpoint to manually dispatch custom SMS messages."""
+#     sms_sid = await TelephonyService.send_sms_async(request.to_phone, request.message_body)
+#     return {"status": "success", "sms_sid": sms_sid}
+#
+# ⚠️  KYU BADLA (WHY WE CHANGED):
+#     Yeh endpoint bilkul bhi protected nahi tha. Koi bhi:
+#       1. /docs URL kholta
+#       2. /sms/send endpoint dhundta
+#       3. POST request bhejta kisi bhi number pe, koi bhi message ke saath
+#
+#     Aur woh message jaata aapke Twilio account se — aapke paise se!
+#
+#     Real attack scenario:
+#       - Script likho jo 10,000 SMS bheje → ₹15,000 ka bill
+#       - Aapka Twilio account suspend ho jaaye
+#       - Saara IVR system band ho jaaye (Twilio = no calls)
+#       - Aap brand ke naam pe fraud messages bhej ke badnaam ho jaao
+#
+#     Fix: X-Internal-API-Key header required. Bina sahi key ke:
+#       → HTTP 401 Unauthorized milega
+#     secrets.compare_digest() use kiya → timing attacks se bhi safe
+# =============================================================================
+
+# ✅ NAYA CODE — Internal API Key authentication
+_internal_api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
+
+async def verify_internal_api_key(api_key: str = Security(_internal_api_key_header)) -> str:
+    """
+    Validates the X-Internal-API-Key header against the configured secret.
+    Uses constant-time comparison (secrets.compare_digest) to prevent timing attacks.
+    """
+    expected_key = settings.INTERNAL_API_KEY
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Internal API key not configured on this server."
+        )
+    if not api_key or not secrets.compare_digest(api_key, expected_key):
+        logger.warning("Rejected request with invalid internal API key")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Internal-API-Key header."
+        )
+    return api_key
+
+
 # Static directories config
 UPLOAD_DIR = os.path.join(settings.BASE_DIR, "static", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# =============================================================================
+# ✅ FIX-07: Voice upload validation — type whitelist + 10 MB size cap
+# =============================================================================
+ALLOWED_AUDIO_TYPES = ["audio/wav", "audio/mpeg", "audio/ogg", "audio/webm"]
+MAX_AUDIO_SIZE_MB = 10
 
 @router.post("/sms/query", response_model=QueryResponse)
 async def process_sms_query(
@@ -159,6 +220,36 @@ async def process_voice_query(
     Detects language -> Resolves environment -> RAG -> Gemini -> Synthesizes TTS -> Saves metadata.
     """
     logger.info("Received voice call API request", sender=sender_phone, file=audio_file.filename)
+
+    # ✅ FIX-07: Validate audio MIME type before any processing
+    if audio_file.content_type not in ALLOWED_AUDIO_TYPES:
+        logger.warning(
+            "Rejected upload: unsupported audio MIME type",
+            content_type=audio_file.content_type,
+            filename=audio_file.filename,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{audio_file.content_type}'. "
+                   f"Allowed types: {', '.join(ALLOWED_AUDIO_TYPES)}"
+        )
+
+    # ✅ FIX-07: Validate audio file size before saving (max {MAX_AUDIO_SIZE_MB} MB)
+    contents = await audio_file.read()
+    size_mb = len(contents) / (1024 * 1024)
+    if size_mb > MAX_AUDIO_SIZE_MB:
+        logger.warning(
+            "Rejected upload: audio file exceeds size limit",
+            size_mb=round(size_mb, 2),
+            limit_mb=MAX_AUDIO_SIZE_MB,
+            filename=audio_file.filename,
+        )
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large: {size_mb:.1f} MB. Maximum allowed size is {MAX_AUDIO_SIZE_MB} MB."
+        )
+    # Reset file pointer so save_upload_file can read from the beginning
+    await audio_file.seek(0)
 
     # 1. Save uploaded file safely
     temp_path = save_upload_file(audio_file, UPLOAD_DIR)
@@ -290,7 +381,8 @@ async def test_location_resolution(location: LocationInput):
 async def webhook_missed_call(
     request: Request,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(validate_twilio_webhook),  # FIX-04: Validate Twilio HMAC signature
 ):
     """
     Missed call receiver from the telecom provider (Twilio or Exotel).
@@ -351,7 +443,10 @@ async def webhook_missed_call(
 
 
 @router.api_route("/ivr/start", methods=["GET", "POST"])
-async def ivr_start(request: Request):
+async def ivr_start(
+    request: Request,
+    _: None = Depends(validate_twilio_webhook),  # FIX-04: Validate Twilio HMAC signature
+):
     """
     Outbound call start webhook. Initiated when the farmer answers the callback.
     Plays a welcoming greeting in Hindi and records the farmer's query.
@@ -379,7 +474,8 @@ async def ivr_start(request: Request):
 async def ivr_recording(
     request: Request,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(validate_twilio_webhook),  # FIX-04: Validate Twilio HMAC signature
 ):
     """
     Receives Twilio/Exotel call recording webhook, downloads audio payload,
@@ -420,22 +516,69 @@ async def ivr_recording(
     local_filename = f"{call_sid}.wav"
     local_path = os.path.join(UPLOAD_DIR, local_filename)
 
-    logger.info("Downloading IVR audio query", download_url=download_url, target_path=local_path)
+    # =============================================================================
+    # ❌ PURANA CODE — GALAT ADVICE JAATI THI FARMER KO (ISLIYE BADLA)
+    # =============================================================================
+    # try:
+    #     async with aiohttp.ClientSession() as session:
+    #         async with session.get(download_url) as response:
+    #             if response.status == 200:
+    #                 with open(local_path, "wb") as f:
+    #                     f.write(await response.read())
+    #             else:
+    #                 with open(local_path, "wb") as f:
+    #                     f.write(b"")    # ← YAHAN PROBLEM THI!
+    # except Exception as e:
+    #     with open(local_path, "wb") as f:
+    #         f.write(b"")               # ← AUR YAHAN BHI!
+    #
+    # ⚠️  KYU BADLA (WHY WE CHANGED):
+    #     Jab bhi download fail hota (network issue, Twilio CDN down, 1 second ka glitch):
+    #       1. System ek khali (empty) file likhta tha → 0 bytes
+    #       2. Whisper us empty file ko padh nahi sakta → fail silently
+    #       3. System automatically yeh hardcoded answer deta:
+    #          "Dhaan ki patti peeli pad rahi hai, yuriya daalein"
+    #       4. Chahe farmer ne kuch bhi poocha ho:
+    #          - Beemar gaay → "Dhaan mein yuriya daalein" (GALAT!)
+    #          - Loan query → "Dhaan mein yuriya daalein" (GALAT!)
+    #          - Machli farming → "Dhaan mein yuriya daalein" (GALAT!)
+    #
+    #     Yeh ek SAFETY ISSUE hai. Galat agricultural advice se:
+    #       - Crop loss ho sakti hai
+    #       - Animal mar sakta hai
+    #       - Legal liability aa sakti hai startup pe
+    #
+    #     Fix: Agar download fail ho, AI pipeline START mat karo.
+    #     Farmer ko politely batao "dobara miss call karo" aur call khatam karo.
+    # =============================================================================
+
+    # ✅ NAYA CODE — Download fail = safe error + hangup (no wrong advice)
+    download_succeeded = False
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(download_url) as response:
-                if response.status == 200:
+            async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
                     with open(local_path, "wb") as f:
-                        f.write(await response.read())
+                        f.write(await resp.read())
+                    download_succeeded = True
                     logger.info("Downloaded recorded audio successfully.")
                 else:
-                    logger.error("Failed to download recorded file, response status code", status=response.status)
-                    with open(local_path, "wb") as f:
-                        f.write(b"")
+                    logger.error("Twilio recording download failed", status=resp.status, url=download_url)
     except Exception as e:
-        logger.error("Error downloading telephony voice recording", error=str(e))
-        with open(local_path, "wb") as f:
-            f.write(b"")
+        logger.error("Exception during audio download from Twilio", error=str(e))
+
+    # SAFETY: If download failed, do NOT proceed with the AI pipeline.
+    if not download_succeeded:
+        error_twiml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<Response>'
+            '<Say language="hi-IN" voice="Google.hi-IN-Standard-A">'
+            'किसान भाई, आपकी आवाज़ डाउनलोड नहीं हो सकी। कृपया थोड़ी देर बाद दोबारा मिस कॉल करें।'
+            '</Say>'
+            '<Hangup/>'
+            '</Response>'
+        )
+        return Response(content=error_twiml, media_type="application/xml")
 
     # 2. Transcribe voice audio
     try:
@@ -540,8 +683,31 @@ async def ivr_recording(
         )
         logger.info("SMS backup scheduled in background task", caller=caller_number)
 
-    # 10. Redirect call session to playback response endpoint
-    redirect_url = f"{settings.API_V1_STR}/ivr/response?query_id={query_record.id}"
+    # =============================================================================
+    # ❌ PURANA CODE — TWILIO REDIRECT FAIL HOTA THA (ISLIYE BADLA)
+    # =============================================================================
+    # redirect_url = f"{settings.API_V1_STR}/ivr/response?query_id={query_record.id}"
+    # # Yeh produce karta: /api/v1/ivr/response?query_id=...
+    # # Yeh ek RELATIVE URL hai — Twilio nahi samjhega
+    #
+    # ⚠️  KYU BADLA (WHY WE CHANGED):
+    #     Twilio ka <Redirect> verb ek POORA (absolute) URL chahta hai:
+    #       ✅ https://yoursite.com/api/v1/ivr/response?query_id=abc
+    #       ❌ /api/v1/ivr/response?query_id=abc   ← Twilio yeh nahi samjhega
+    #
+    #     Jab relative URL milta hai Twilio ko:
+    #       - Call drop ho jaati hai silently
+    #       - Farmer ka poora AI response generate ho chuka hota hai
+    #       - Lekin farmer ko kuch bhi nahi sunai deta
+    #       - Call khatam. Farmer confused.
+    #
+    #     Fix: settings.BASE_URL add kiya (e.g. https://krishivani.in)
+    #     Ab URL banta hai: https://krishivani.in/api/v1/ivr/response?query_id=...
+    # =============================================================================
+
+    # ✅ NAYA CODE — Absolute URL jo Twilio samjhe
+    # IMPORTANT: Twilio <Redirect> requires a fully qualified absolute URL.
+    redirect_url = f"{settings.BASE_URL.rstrip('/')}{settings.API_V1_STR}/ivr/response?query_id={query_record.id}"
     xml_response = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<Response>'
@@ -619,16 +785,26 @@ async def ivr_response(
 
 
 class SMSRequest(BaseModel):
-    to_phone: str = Field(..., description="Farmer's phone number")
-    message_body: str = Field(..., description="SMS text payload")
+    to_phone: str = Field(..., description="Farmer's phone number in E.164 format")
+    message_body: str = Field(..., min_length=1, max_length=1600, description="SMS text payload")
 
 
 @router.post("/sms/send")
-async def send_sms_direct(request: SMSRequest):
+async def send_sms_direct(
+    request: SMSRequest,
+    _: str = Depends(verify_internal_api_key),
+):
     """
-    Utility endpoint to manually dispatch custom SMS messages.
+    Internal-only endpoint to manually dispatch custom SMS messages.
+
+    SECURITY: This endpoint is protected by the X-Internal-API-Key header.
+    It MUST NOT be publicly accessible — exposing it allows anyone to send
+    arbitrary SMS messages on the startup's Twilio/Exotel billing account.
+
+    Include the header in requests:
+        X-Internal-API-Key: <value of INTERNAL_API_KEY in .env>
     """
-    logger.info("Manual SMS dispatch request received", to=request.to_phone)
+    logger.info("Manual SMS dispatch request received", to=f"+91****{request.to_phone[-4:]}")
     sms_sid = await TelephonyService.send_sms_async(request.to_phone, request.message_body)
     return {"status": "success", "sms_sid": sms_sid}
 

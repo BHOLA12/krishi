@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI  , Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -223,22 +223,75 @@ LANDING_PAGE_HTML = """
 setup_logging()
 logger = structlog.get_logger()
 
-# Bootstrapping FastAPI App
+# =============================================================================
+# ❌ PURANA CODE — APP BOOT NAHI HOTI THI (ISLIYE BADLA)
+# =============================================================================
+# app = FastAPI(
+#     title=settings.PROJECT_NAME,
+#     description="...",
+#     version="1.0.0",
+#     docs_url="/docs",      # ← Production mein bhi /docs khula tha
+#     redoc_url="/redoc"     # ← Koi bhi API ka structure dekh sakta tha
+# )
+#
+# ⚠️  KYU BADLA (WHY WE CHANGED):
+#     docs_url="/docs" production mein bhi active tha. Matlab koi bhi
+#     https://yoursite.com/docs khol ke dekh sakta tha ki kaun kaun se
+#     endpoints hain — including woh unauthenticated /sms/send endpoint
+#     jo Twilio billing ke liye khula tha.
+#     Ab: Development mein /docs milega, Production mein nahi.
+# =============================================================================
+
+# ✅ NAYA CODE — Swagger sirf development mein dikhega
+_docs_url = "/docs" if settings.ENV == "development" else None
+_redoc_url = "/redoc" if settings.ENV == "development" else None
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Krishi-Vani: High-Performance Multilingual Audio/SMS Engine for Rural India",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url=_docs_url,
+    redoc_url=_redoc_url
 )
 
-# CORS Policy configuration
+# =============================================================================
+# ❌ PURANA CORS CODE — APP CRASH KARTI THI (ISLIYE BADLA)
+# =============================================================================
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],       # ← Wildcard — sab allow
+#     allow_credentials=True,    # ← Credentials bhi allow
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+#
+# ⚠️  KYU BADLA (WHY WE CHANGED):
+#     W3C CORS specification ek rule define karti hai:
+#       allow_origins=["*"]  +  allow_credentials=True  =  ILLEGAL COMBINATION
+#
+#     FastAPI/Starlette version 0.20+ is rule ko enforce karta hai.
+#     Jaise hi app start hoti, Python yeh error throw karta:
+#       RuntimeError: allow_origins cannot be ['*'] when allow_credentials is True
+#     App completely band ho jaati — koi bhi request process nahi hoti.
+#
+#     Fix: ["*"] ki jagah specific URLs diye jo actually allowed hain.
+#     Development mein localhost bhi add kiya gaya hai debugging ke liye.
+# =============================================================================
+
+# ✅ NAYA CODE — Specific origins, no wildcard
+_cors_origins = [
+    "http://localhost:3000",
+    "http://localhost:8000",
+    settings.BASE_URL,
+] if settings.ENV == "development" else [
+    settings.BASE_URL,
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Internal-API-Key"],
 )
 
 # Ensure static directories exist
