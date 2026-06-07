@@ -68,3 +68,31 @@ class TwilioClient:
         else:
             logger.info("[MOCK TWILIO TELEPHONY] Sending SMS", to=to_number, body=message_body)
             return f"mock-twilio-sms-sid-{to_number}"
+
+    def send_whatsapp_message(self, to_phone: str, message_body: str) -> str:
+        """
+        Sends a WhatsApp message via Twilio API.
+        Handles 'whatsapp:' prefix formatting dynamically.
+        """
+        if self.is_configured and self.client:
+            try:
+                to_formatted = to_phone if to_phone.startswith("whatsapp:") else f"whatsapp:{to_phone}"
+                from_formatted = settings.TWILIO_WHATSAPP_NUMBER
+                if not from_formatted.startswith("whatsapp:"):
+                    from_formatted = f"whatsapp:{from_formatted}"
+
+                logger.info("Sending Twilio WhatsApp message", to=to_formatted)
+                message = self.client.messages.create(
+                    to=to_formatted,
+                    from_=from_formatted,
+                    body=message_body
+                )
+                logger.info("Twilio WhatsApp message sent successfully", message_sid=message.sid)
+                return message.sid
+            except Exception as e:
+                logger.error("Twilio WhatsApp transmission failed", error=str(e))
+                return f"failed-whatsapp-sid-{to_phone}"
+        else:
+            logger.info("[MOCK WHATSAPP] Sending message", to=to_phone, body=message_body)
+            return f"mock-whatsapp-sid-{to_phone}"
+

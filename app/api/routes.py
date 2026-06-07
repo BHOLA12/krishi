@@ -363,6 +363,142 @@ async def process_voice_query(
         created_at=query_record.created_at
     )
 
+@router.post("/whatsapp/query")
+async def process_whatsapp_query(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Receives Twilio WhatsApp webhook, checks for text or voice note attachments,
+    runs the AI/RAG query pipeline, and returns the result back over WhatsApp.
+    """
+    form_data = await request.form()
+    params = dict(form_data)
+    
+    sender = params.get("From", "")  # Format: whatsapp:+91xxxxxxxxxx
+    query_text = params.get("Body", "").strip()
+    media_url = params.get("MediaUrl0")  # Twilio creates this if a voice note is sent
+    
+    logger.info("Incoming WhatsApp webhook received", sender=sender, has_media=bool(media_url))
+    
+    # 1. Resolve User Query (Text or Transcribed Audio)
+    resolved_query = query_text
+    wav_path = None
+    
+    if media_url:
+        # User sent a Voice Note/Audio
+        local_filename = f"whatsapp_{uuid.uuid4()}.ogg"
+        local_path = os.path.join(UPLOAD_DIR, local_filename)
+        
+        # Download the audio file from Twilio CDN
+        download_succeeded = False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(media_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        with open(local_path, "wb") as f:
+                            f.write(await resp.read())
+                        download_succeeded = True
+        except Exception as e:
+            logger.error("Failed downloading WhatsApp audio from Twilio", error=str(e))
+            
+        if download_succeeded:
+            # Convert audio format to 16kHz WAV for Whisper
+            try:
+                wav_path = convert_audio_format(local_path, "wav")
+                # Run Whisper transcription
+                resolved_query = await WhisperTranscriptionService.transcribe(wav_path)
+            except Exception as e:
+                logger.error("Failed processing WhatsApp audio file", error=str(e))
+                resolved_query = "ऑडियो फ़ाइल लोड नहीं हो सकी।"
+        else:
+            resolved_query = "ऑडियो डाउनलोड विफल रहा।"
+
+    # 2. Run location fallbacks and Weather
+    resolved_loc = await LocationService.resolve_location(
+        latitude=None, longitude=None, cell_tower_id=None, ip_address=None
+    )
+    weather_info = await WeatherService.get_weather(
+        latitude=settings.DEFAULT_LATITUDE,
+        longitude=settings.DEFAULT_LONGITUDE
+    )
+    
+    # 3. Detect Language and Translate to Hindi
+    detected_lang, detected_dialect = await LanguageDetectorService.detect_language_and_dialect(resolved_query)
+    normalized_query = await TranslationService.translate_to_hindi(resolved_query, detected_lang)
+    
+    # 4. Semantic Search (RAG facts check)
+    search_context = f"{normalized_query} {resolved_loc['district']} {resolved_loc['soil_type']} {weather_info['active_season']}"
+    from app.rag.vector_store import RAGRetrievalService
+    grounded_facts = await RAGRetrievalService.retrieve_facts(search_context, top_k=2)
+    
+    # 5. Synthesis via Gemini
+    env_profile = f"Location: {resolved_loc['district']}, Soil: {resolved_loc['soil_type']}, Temp: {weather_info['temperature']}°C, Humidity: {weather_info['humidity']}%, Season: {weather_info['active_season']}"
+    ai_response = await GeminiAIService.generate_response(
+        user_query=resolved_query,
+        env_profile=env_profile,
+        grounded_facts=grounded_facts,
+        detected_dialect=detected_dialect
+    )
+    
+    response_text = ai_response.get("sms_payload") or ai_response.get("voice_response") or "जानकारी उपलब्ध नहीं हो सकी।"
+    
+    # 6. Save metadata to Database
+    query_record = FarmerQuery(
+        query_type="whatsapp",
+        audio_path=wav_path,
+        raw_text=query_text if not media_url else None,
+        transcribed_text=resolved_query if media_url else None,
+        normalized_text=normalized_query,
+        detected_language=detected_lang,
+        detected_dialect=detected_dialect,
+        intent=ai_response.get("intent"),
+        detected_disease_or_need=ai_response.get("detected_disease_or_need"),
+        latitude=None,
+        longitude=None,
+        state=resolved_loc["state"],
+        district=resolved_loc["district"],
+        block=resolved_loc["block"],
+        village=resolved_loc["village"],
+        temperature=weather_info["temperature"],
+        humidity=weather_info["humidity"],
+        soil_type=resolved_loc["soil_type"],
+        active_season=weather_info["active_season"],
+        sms_payload=response_text,
+        voice_response_text=ai_response.get("voice_response"),
+        raw_ai_response=ai_response
+    )
+    db.add(query_record)
+    await db.flush()
+
+    # Log Location Audit
+    audit_record = LocationAudit(
+        query_id=query_record.id,
+        cell_tower_id=params.get("ApiVersion"),
+        ip_address=request.client.host if request.client else None,
+        resolved_state=resolved_loc["state"],
+        resolved_district=resolved_loc["district"],
+        resolved_block=resolved_loc["block"],
+        resolved_village=resolved_loc["village"],
+        lookup_status="success"
+    )
+    db.add(audit_record)
+    await db.commit()
+    await db.refresh(query_record)
+    
+    logger.info("WhatsApp query successfully processed and queued for reply", query_id=str(query_record.id))
+    
+    # 7. Send Response back asynchronously to prevent webhook timeout
+    background_tasks.add_task(
+        TelephonyService.send_whatsapp_async,
+        sender,
+        response_text
+    )
+    
+    # Return empty TwiML response to satisfy Twilio
+    return Response(content="<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>", media_type="application/xml")
+
 @router.post("/location/resolve", response_model=Dict[str, Any])
 async def test_location_resolution(location: LocationInput):
     """

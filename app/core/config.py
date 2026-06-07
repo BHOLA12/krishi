@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = "your_twilio_account_sid_here"
     TWILIO_AUTH_TOKEN: str = "your_twilio_auth_token_here"
     TWILIO_PHONE_NUMBER: str = "your_twilio_phone_number_here"
+    TWILIO_WHATSAPP_NUMBER: str = "whatsapp:+14155238886"
 
     # Exotel API credentials
     EXOTEL_API_KEY: str = "your_exotel_api_key_here"

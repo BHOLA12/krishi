@@ -110,3 +110,22 @@ class TelephonyService:
                 return future.result()
             else:
                 return loop.run_until_complete(provider.send_sms(to_number, message_body))
+
+    @classmethod
+    async def send_whatsapp_async(cls, to_number: str, message_body: str) -> str:
+        """
+        Asynchronously sends a WhatsApp message containing advisory details.
+        """
+        provider = cls.get_provider()
+        if isinstance(provider, TwilioClient):
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                provider.send_whatsapp_message,
+                to_number,
+                message_body
+            )
+        else:
+            logger.warning("WhatsApp is not supported for the selected provider. Running mock.")
+            return f"mock-whatsapp-sid-{to_number}"
+
