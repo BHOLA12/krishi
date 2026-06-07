@@ -400,7 +400,7 @@ async def webhook_missed_call(
                 json_data = await request.json()
                 params.update(json_data)
             except Exception:
-                pass
+                logger.debug("Request body is neither valid form-data nor JSON")
 
     caller_number = params.get("From") or params.get("caller") or params.get("sender")
     call_sid = params.get("CallSid") or params.get("sid") or "unknown_sid"
@@ -488,7 +488,7 @@ async def ivr_recording(
         form_data = await request.form()
         params.update(form_data)
     except Exception:
-        pass
+        logger.debug("Failed to parse form parameters from recording webhook")
     
     caller_number = params.get("From") or params.get("caller") or "unknown_farmer"
     recording_url = params.get("RecordingUrl")

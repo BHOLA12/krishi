@@ -65,7 +65,7 @@ def convert_audio_format(input_path: str, target_format: str = "wav") -> str:
     Transcodes audio file to 16kHz mono WAV using ffmpeg.
     Twilio/Exotel .mp3 → PCM WAV jo Faster-Whisper padh sake.
     """
-    import subprocess
+    import subprocess  # nosec B404
 
     base, ext = os.path.splitext(input_path)
     if ext.lower() == f".{target_format}":
@@ -74,7 +74,7 @@ def convert_audio_format(input_path: str, target_format: str = "wav") -> str:
     output_path = f"{base}_converted.{target_format}"
 
     try:
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607
             [
                 "ffmpeg", "-y",          # Overwrite output if exists
                 "-i", input_path,        # Input file

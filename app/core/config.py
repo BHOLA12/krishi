@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     ENV: str = "development"
     DEBUG: bool = False  # Explicitly off by default; set DEBUG=true in .env for local dev
     SECRET_KEY: str = ""  # REQUIRED — set a strong random value in .env
+    HOST: str = "127.0.0.1"
+    PORT: int = 8000
 
     # Internal admin API key — protects endpoints like /sms/send from public access.
     # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"

@@ -11,7 +11,7 @@ class TwilioClient:
         self.from_number = settings.TWILIO_PHONE_NUMBER
         self.is_configured = (
             self.sid and self.sid != "your_twilio_account_sid_here" and
-            self.token and self.token != "your_twilio_auth_token_here"
+            self.token and self.token != "your_twilio_auth_token_here"  # nosec B105
         )
         if self.is_configured:
             try:

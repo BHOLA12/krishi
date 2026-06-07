@@ -13,7 +13,7 @@ class ExotelClient:
         self.virtual_number = settings.EXOTEL_VIRTUAL_NUMBER
         self.is_configured = (
             self.api_key and self.api_key != "your_exotel_api_key_here" and
-            self.api_token and self.api_token != "your_exotel_api_token_here"
+            self.api_token and self.api_token != "your_exotel_api_token_here"  # nosec B105
         )
         if self.is_configured:
             logger.info("Exotel Client initialized successfully.")

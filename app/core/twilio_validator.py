@@ -47,7 +47,7 @@ async def validate_twilio_webhook(request: Request) -> None:
 
     # Auth token must be configured to validate
     auth_token = settings.TWILIO_AUTH_TOKEN
-    if not auth_token or auth_token == "your_twilio_auth_token_here":
+    if not auth_token or auth_token == "your_twilio_auth_token_here":  # nosec B105
         logger.warning("TWILIO_AUTH_TOKEN not set — skipping signature validation")
         return
 
@@ -64,7 +64,7 @@ async def validate_twilio_webhook(request: Request) -> None:
             form_data = await request.form()
             form_params = dict(form_data)
         except Exception:
-            pass
+            logger.debug("Failed to parse form parameters during signature validation")
 
     # For GET requests, Twilio includes params as query string
     query_params = dict(request.query_params)
